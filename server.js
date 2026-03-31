@@ -135,21 +135,43 @@ app.get('/search', requireAuth, async (req, res) => {
       const hasWebsite = !!biz.website;
       const rating  = biz.rating || null;
       const reviews = biz.reviews || 0;
+      const hasPhone = !!biz.phone;
 
+      // Score calculation
       let score = 50;
-      if (!hasWebsite)              score += 20;
-      if (reviews < 10)             score += 15;
-      if (rating && rating < 4.0)   score += 10;
-      if (!biz.thumbnail)           score += 5;
+      if (!hasWebsite)                score += 20;
+      if (reviews < 10)               score += 15;
+      if (rating && rating < 4.0)     score += 10;
+      if (!biz.thumbnail)             score += 5;
+      if (reviews === 0)              score += 5;
+      if (rating && rating < 3.0)     score += 5;
       score = Math.min(score, 99);
 
-      const reasons = [];
-      if (!hasWebsite)            reasons.push('no website');
-      if (reviews < 10)           reasons.push(`only ${reviews} reviews`);
-      if (rating && rating < 4.0) reasons.push(`low rating (${rating})`);
-      const explanation = reasons.length
-        ? reasons.join(' + ') + ' = high opportunity'
-        : 'established business';
+      // Score label
+      const scoreLabel = score >= 80 ? 'Hot Lead' : score >= 65 ? 'Warm Lead' : 'Cold Lead';
+
+      // Detailed gaps for AI explanation
+      const gaps = [];
+      if (!hasWebsite)                gaps.push('No website');
+      if (reviews === 0)              gaps.push('Zero reviews');
+      else if (reviews < 10)          gaps.push(`Only ${reviews} reviews`);
+      if (rating && rating < 3.0)     gaps.push(`Poor rating (${rating}★)`);
+      else if (rating && rating < 4.0) gaps.push(`Below-average rating (${rating}★)`);
+      if (!hasPhone)                  gaps.push('No phone listed');
+      if (!biz.thumbnail)             gaps.push('No profile photo');
+
+      const scoreExplanation = gaps.length
+        ? gaps.join(' · ') + ` → ${scoreLabel}`
+        : `Strong online presence → ${scoreLabel}`;
+
+      // Probable email from website domain
+      let probableEmail = null;
+      if (biz.website) {
+        try {
+          const domain = new URL(biz.website).hostname.replace(/^www\./, '');
+          probableEmail = `info@${domain}`;
+        } catch (_) {}
+      }
 
       return {
         id: i + 1,
@@ -162,8 +184,11 @@ app.get('/search', requireAuth, async (req, res) => {
         reviews,
         category:         biz.type || niche,
         score,
-        scoreExplanation: explanation,
-        email:            null,
+        scoreLabel,
+        scoreExplanation,
+        gaps,
+        email:            probableEmail,
+        emailProbable:    !!probableEmail,
         ownerName:        null,
         social:           { facebook: null, instagram: null },
         verified:         new Date().toISOString().split('T')[0],
