@@ -20,26 +20,26 @@ app.get('/search', async (req, res) => {
     let nextPageToken = null;
     const maxResults = Math.min(parseInt(count), 100);
 
-    // SerpAPI paginates — fetch up to 3 pages to get enough results
-    for (let page = 0; page < 3 && allResults.length < maxResults; page++) {
+    // SerpAPI Google Maps returns 20 per page — paginate using 'start'
+    const pages = Math.ceil(maxResults / 20);
+    for (let page = 0; page < pages && allResults.length < maxResults; page++) {
       const params = {
         engine: 'google_maps',
         q: `${niche} in ${city}`,
         type: 'search',
         api_key: SERP_API_KEY,
         hl: 'en',
+        start: page * 20,
       };
-      if (nextPageToken) params.next_page_token = nextPageToken;
 
       const response = await axios.get('https://serpapi.com/search', { params });
       const data = response.data;
 
-      if (data.local_results) {
+      if (data.local_results && data.local_results.length > 0) {
         allResults = allResults.concat(data.local_results);
+      } else {
+        break; // no more results available
       }
-
-      nextPageToken = data.serpapi_pagination?.next_page_token;
-      if (!nextPageToken) break;
     }
 
     // Format results
