@@ -191,15 +191,6 @@ app.get('/search', requireAuth, async (req, res) => {
         ? gaps.join(' · ') + ` → ${scoreLabel}`
         : `Strong online presence → ${scoreLabel}`;
 
-      // Probable email from website domain
-      let probableEmail = null;
-      if (biz.website) {
-        try {
-          const domain = new URL(biz.website).hostname.replace(/^www\./, '');
-          probableEmail = `info@${domain}`;
-        } catch (_) {}
-      }
-
       return {
         id: i + 1,
         name:             biz.title || 'Unknown Business',
@@ -228,16 +219,9 @@ app.get('/search', requireAuth, async (req, res) => {
     );
     emailResults.forEach((result, i) => {
       if (result.status === 'fulfilled' && result.value) {
-        leads[i].email         = result.value;
-        leads[i].emailProbable = false;
-      } else if (leads[i].website) {
-        // Fallback: probable email from domain if scrape failed
-        try {
-          const domain = new URL(leads[i].website).hostname.replace(/^www\./, '');
-          leads[i].email         = `info@${domain}`;
-          leads[i].emailProbable = true;
-        } catch (_) {}
+        leads[i].email = result.value;
       }
+      // No fallback — if we can't find a real email, we leave it null
     });
 
     // Increment search count
