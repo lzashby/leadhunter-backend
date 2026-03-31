@@ -30,6 +30,51 @@ const PLAN_LIMITS = {
   pro:   { searches: Infinity,  maxLeads: 100 },
 };
 
+// Scrape owner/founder name from a business website
+async function scrapeOwnerName(websiteUrl) {
+  const base = websiteUrl.replace(/\/$/, '');
+  const pagesToTry = [base, `${base}/about`, `${base}/about-us`, `${base}/team`, `${base}/our-story`];
+
+  for (const page of pagesToTry) {
+    try {
+      const res = await axios.get(page, {
+        timeout: 4000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
+        maxRedirects: 3,
+        maxContentLength: 500000,
+      });
+      const html = typeof res.data === 'string' ? res.data : '';
+
+      // 1. Try JSON-LD schema markup (most reliable)
+      const jsonLdMatches = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+      for (const block of jsonLdMatches) {
+        try {
+          const json = JSON.parse(block.replace(/<script[^>]*>|<\/script>/gi, ''));
+          const schemas = Array.isArray(json) ? json : [json];
+          for (const schema of schemas) {
+            // founder, employee, or contactPoint with a person name
+            const person = schema.founder || schema.employee || schema.owner;
+            if (person && person.name) return person.name;
+            if (schema['@type'] === 'Person' && schema.name) return schema.name;
+          }
+        } catch (_) {}
+      }
+
+      // 2. Text patterns — "Owner: John Smith", "Founded by Jane", etc.
+      const patterns = [
+        /(?:owner|founder|proprietor|director|principal|president|ceo|operator)[:\s,–-]+([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})/i,
+        /(?:hi,?\s+i'?m|my name is|meet)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/i,
+        /founded\s+by\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})/i,
+      ];
+      for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (match && match[1] && match[1].length < 40) return match[1].trim();
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
 // Scrape a real email from a business website
 async function scrapeEmail(websiteUrl) {
   const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
@@ -213,15 +258,22 @@ app.get('/search', requireAuth, async (req, res) => {
       };
     });
 
-    // Scrape real emails from websites in parallel
-    const emailResults = await Promise.allSettled(
-      leads.map(l => l.website ? scrapeEmail(l.website) : Promise.resolve(null))
-    );
+    // Scrape emails and owner names from websites in parallel
+    const [emailResults, ownerResults] = await Promise.all([
+      Promise.allSettled(leads.map(l => l.website ? scrapeEmail(l.website) : Promise.resolve(null))),
+      Promise.allSettled(leads.map(l => l.website ? scrapeOwnerName(l.website) : Promise.resolve(null))),
+    ]);
+
     emailResults.forEach((result, i) => {
       if (result.status === 'fulfilled' && result.value) {
         leads[i].email = result.value;
       }
-      // No fallback — if we can't find a real email, we leave it null
+    });
+
+    ownerResults.forEach((result, i) => {
+      if (result.status === 'fulfilled' && result.value) {
+        leads[i].ownerName = result.value;
+      }
     });
 
     // Increment search count
