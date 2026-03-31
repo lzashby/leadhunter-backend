@@ -30,6 +30,33 @@ const PLAN_LIMITS = {
   pro:   { searches: Infinity,  maxLeads: 100 },
 };
 
+// Scrape a real email from a business website
+async function scrapeEmail(websiteUrl) {
+  const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  // Filter out noise: image files, tracking pixels, platform emails, etc.
+  const ignore = /\.(png|jpg|jpeg|gif|svg|webp|css|js)@|noreply|no-reply|@example\.|@sentry\.|@wix|@squarespace|@shopify|@wordpress|@gravatar|privacy@|support@apple|amazonaws/i;
+
+  const base = websiteUrl.replace(/\/$/, '');
+  const pagesToTry = [base, `${base}/contact`, `${base}/about`, `${base}/contact-us`];
+
+  for (const page of pagesToTry) {
+    try {
+      const res = await axios.get(page, {
+        timeout: 4000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
+        maxRedirects: 3,
+        maxContentLength: 500000, // cap at 500KB to avoid huge pages
+      });
+      const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+      const found = (html.match(emailRegex) || []).filter(e => !ignore.test(e));
+      if (found.length) return found[0].toLowerCase();
+    } catch (_) {
+      // page unreachable — try next
+    }
+  }
+  return null;
+}
+
 // Get start of current month
 function monthStart() {
   const d = new Date();
@@ -187,12 +214,30 @@ app.get('/search', requireAuth, async (req, res) => {
         scoreLabel,
         scoreExplanation,
         gaps,
-        email:            probableEmail,
-        emailProbable:    !!probableEmail,
+        email:            null,
+        emailProbable:    false,
         ownerName:        null,
         social:           { facebook: null, instagram: null },
         verified:         new Date().toISOString().split('T')[0],
       };
+    });
+
+    // Scrape real emails from websites in parallel
+    const emailResults = await Promise.allSettled(
+      leads.map(l => l.website ? scrapeEmail(l.website) : Promise.resolve(null))
+    );
+    emailResults.forEach((result, i) => {
+      if (result.status === 'fulfilled' && result.value) {
+        leads[i].email         = result.value;
+        leads[i].emailProbable = false;
+      } else if (leads[i].website) {
+        // Fallback: probable email from domain if scrape failed
+        try {
+          const domain = new URL(leads[i].website).hostname.replace(/^www\./, '');
+          leads[i].email         = `info@${domain}`;
+          leads[i].emailProbable = true;
+        } catch (_) {}
+      }
     });
 
     // Increment search count
