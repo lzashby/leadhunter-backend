@@ -38,7 +38,7 @@ async function scrapeWebsiteData(websiteUrl) {
   const currentYear = new Date().getFullYear();
 
   const base = websiteUrl.replace(/\/$/, '');
-  const pagesToTry = [base, `${base}/contact`, `${base}/about`, `${base}/contact-us`];
+  const pagesToTry = [base, `${base}/contact`];
 
   let email = null;
   let foundingYear = null;
@@ -46,10 +46,10 @@ async function scrapeWebsiteData(websiteUrl) {
   for (const page of pagesToTry) {
     try {
       const res = await axios.get(page, {
-        timeout: 4000,
+        timeout: 2500,
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
-        maxRedirects: 3,
-        maxContentLength: 500000,
+        maxRedirects: 2,
+        maxContentLength: 200000,
       });
       const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
 
