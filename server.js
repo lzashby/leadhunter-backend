@@ -42,7 +42,7 @@ async function scrapeWebsiteData(websiteUrl) {
 
   let email = null;
   let foundingYear = null;
-  const result = { email: null, foundingYear: null, hasGoogleAds: false, hasFacebookAds: false };
+  const result = { email: null, foundingYear: null, hasBooking: false };
 
   for (const page of pagesToTry) {
     try {
@@ -60,10 +60,9 @@ async function scrapeWebsiteData(websiteUrl) {
         if (found.length) email = found[0].toLowerCase();
       }
 
-      // Ad pixel detection (only need homepage)
+      // Booking tool detection (only need homepage)
       if (page === base) {
-        result.hasGoogleAds   = /googleadservices\.com|gtag\('config',\s*'AW-|google_conversion|\/pagead\/|adsbygoogle/i.test(html);
-        result.hasFacebookAds = /connect\.facebook\.net.*fbevents|fbq\s*\(|facebook\.com\/tr\?/i.test(html);
+        result.hasBooking = /calendly\.com|acuityscheduling\.com|booksy\.com|squareup\.com\/appointments|mindbodyonline\.com|vagaro\.com|opentable\.com|setmore\.com|simplybook\.me|fresha\.com|zocdoc\.com|10to8\.com|appointy\.com|book\.app|resy\.com|bookingkoala\.com|gettimely\.com/i.test(html);
       }
 
       // Founding year — JSON-LD schema first
@@ -260,8 +259,7 @@ app.get('/search', requireAuth, async (req, res) => {
         gaps,
         email:            null,
         emailProbable:    false,
-        hasGoogleAds:     false,
-        hasFacebookAds:   false,
+        hasBooking:       false,
         ownerName:        null,
         social:           { facebook: null, instagram: null },
         verified:         new Date().toISOString().split('T')[0],
@@ -275,10 +273,9 @@ app.get('/search', requireAuth, async (req, res) => {
     const currentYear = new Date().getFullYear();
     scrapeResults.forEach((result, i) => {
       if (result.status === 'fulfilled' && result.value) {
-        const { email, hasGoogleAds, hasFacebookAds } = result.value;
+        const { email, hasBooking } = result.value;
         if (email) leads[i].email = email;
-        leads[i].hasGoogleAds   = hasGoogleAds   || false;
-        leads[i].hasFacebookAds = hasFacebookAds || false;
+        leads[i].hasBooking = hasBooking || false;
       }
     });
 
