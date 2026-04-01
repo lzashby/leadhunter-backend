@@ -30,65 +30,6 @@ const PLAN_LIMITS = {
   pro:   { searches: Infinity,  maxLeads: 100 },
 };
 
-// Check if a string looks like a real person name (First Last, both capitalised, no stop words)
-function isLikelyName(str) {
-  if (!str) return false;
-  const parts = str.trim().split(/\s+/);
-  if (parts.length < 2 || parts.length > 3) return false;
-  const stopWords = /^(the|our|your|this|that|to|of|and|or|a|an|is|in|at|for|with|all|any|new|old|senior|junior|general|chief|head|lead|main|top|first|last|my|his|her|its|we|us|me|you|he|she|they|team|staff|crew|group|company|business|services|solutions|management|operations|director|manager|officer|president|executive)$/i;
-  if (parts.some(p => stopWords.test(p))) return false;
-  // Each word must start uppercase and contain only letters, min 2 chars
-  if (!parts.every(p => /^[A-Z][a-zA-Z]{1,}$/.test(p))) return false;
-  return true;
-}
-
-// Scrape owner/founder name from a business website
-async function scrapeOwnerName(websiteUrl) {
-  const base = websiteUrl.replace(/\/$/, '');
-  const pagesToTry = [base, `${base}/about`, `${base}/about-us`, `${base}/our-story`];
-
-  for (const page of pagesToTry) {
-    try {
-      const res = await axios.get(page, {
-        timeout: 4000,
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
-        maxRedirects: 3,
-        maxContentLength: 500000,
-      });
-      const html = typeof res.data === 'string' ? res.data : '';
-
-      // 1. JSON-LD schema markup — most reliable when present
-      const jsonLdBlocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
-      for (const block of jsonLdBlocks) {
-        try {
-          const json = JSON.parse(block.replace(/<script[^>]*>|<\/script>/gi, ''));
-          const schemas = Array.isArray(json) ? json : [json];
-          for (const schema of schemas) {
-            const person = schema.founder || schema.owner;
-            const name = person?.name || (schema['@type'] === 'Person' ? schema.name : null);
-            if (name && isLikelyName(name)) return name;
-          }
-        } catch (_) {}
-      }
-
-      // 2. Copyright footer — "© 2024 John Smith" (common on sole trader sites)
-      const copy = html.match(/©\s*\d{4}\s+([A-Z][a-z]+\s[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/);
-      if (copy && isLikelyName(copy[1])) return copy[1].trim();
-
-      // 3. Strict text patterns — keyword immediately followed by a proper name
-      const patterns = [
-        /(?:owner|founder|proprietor|proprietress)[:\s,\-–]+([A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,}){1,2})/,
-        /(?:founded|owned|started)\s+by\s+([A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,}){1,2})/,
-        /(?:Hi,?\s+I'?m|I'?m\s+your\s+\w+,?\s+)([A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,})?)/,
-      ];
-      for (const pattern of patterns) {
-        const match = html.match(pattern);
-        if (match && isLikelyName(match[1])) return match[1].trim();
-      }
-    } catch (_) {}
-  }
-  return null;
-}
 
 // Scrape a real email from a business website
 async function scrapeEmail(websiteUrl) {
@@ -273,21 +214,13 @@ app.get('/search', requireAuth, async (req, res) => {
       };
     });
 
-    // Scrape emails and owner names from websites in parallel
-    const [emailResults, ownerResults] = await Promise.all([
-      Promise.allSettled(leads.map(l => l.website ? scrapeEmail(l.website) : Promise.resolve(null))),
-      Promise.allSettled(leads.map(l => l.website ? scrapeOwnerName(l.website) : Promise.resolve(null))),
-    ]);
-
+    // Scrape real emails from websites in parallel
+    const emailResults = await Promise.allSettled(
+      leads.map(l => l.website ? scrapeEmail(l.website) : Promise.resolve(null))
+    );
     emailResults.forEach((result, i) => {
       if (result.status === 'fulfilled' && result.value) {
         leads[i].email = result.value;
-      }
-    });
-
-    ownerResults.forEach((result, i) => {
-      if (result.status === 'fulfilled' && result.value) {
-        leads[i].ownerName = result.value;
       }
     });
 
