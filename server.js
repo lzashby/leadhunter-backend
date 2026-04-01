@@ -42,6 +42,7 @@ async function scrapeWebsiteData(websiteUrl) {
 
   let email = null;
   let foundingYear = null;
+  const result = { email: null, foundingYear: null, hasGoogleAds: false, hasFacebookAds: false };
 
   for (const page of pagesToTry) {
     try {
@@ -57,6 +58,12 @@ async function scrapeWebsiteData(websiteUrl) {
       if (!email) {
         const found = (html.match(emailRegex) || []).filter(e => !emailIgnore.test(e));
         if (found.length) email = found[0].toLowerCase();
+      }
+
+      // Ad pixel detection (only need homepage)
+      if (page === base) {
+        result.hasGoogleAds   = /googleadservices\.com|gtag\('config',\s*'AW-|google_conversion|\/pagead\/|adsbygoogle/i.test(html);
+        result.hasFacebookAds = /connect\.facebook\.net.*fbevents|fbq\s*\(|facebook\.com\/tr\?/i.test(html);
       }
 
       // Founding year — JSON-LD schema first
@@ -92,11 +99,15 @@ async function scrapeWebsiteData(websiteUrl) {
         }
       }
 
-      if (email && foundingYear) break; // got everything, stop fetching pages
+      result.email = email;
+      result.foundingYear = foundingYear;
+      if (email && result.hasGoogleAds !== undefined) break;
     } catch (_) {}
   }
 
-  return { email, foundingYear };
+  result.email = email;
+  result.foundingYear = foundingYear;
+  return result;
 }
 
 // Get start of current month
@@ -249,6 +260,8 @@ app.get('/search', requireAuth, async (req, res) => {
         gaps,
         email:            null,
         emailProbable:    false,
+        hasGoogleAds:     false,
+        hasFacebookAds:   false,
         ownerName:        null,
         social:           { facebook: null, instagram: null },
         verified:         new Date().toISOString().split('T')[0],
@@ -262,12 +275,10 @@ app.get('/search', requireAuth, async (req, res) => {
     const currentYear = new Date().getFullYear();
     scrapeResults.forEach((result, i) => {
       if (result.status === 'fulfilled' && result.value) {
-        const { email, foundingYear } = result.value;
+        const { email, hasGoogleAds, hasFacebookAds } = result.value;
         if (email) leads[i].email = email;
-        if (foundingYear) {
-          leads[i].foundingYear = foundingYear;
-          leads[i].yearsInBusiness = currentYear - foundingYear;
-        }
+        leads[i].hasGoogleAds   = hasGoogleAds   || false;
+        leads[i].hasFacebookAds = hasFacebookAds || false;
       }
     });
 
