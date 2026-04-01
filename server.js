@@ -185,11 +185,16 @@ app.get('/search', requireAuth, async (req, res) => {
   // Cap lead count to plan limit
   const requestedCount = Math.min(parseInt(count) || 25, limits.maxLeads);
 
+  // Optional filters
+  const filterNoWebsite = req.query.noWebsite === 'true';
+  const filterMaxReviews = req.query.maxReviews ? parseInt(req.query.maxReviews) : null;
+  const filterMaxRating  = req.query.maxRating  ? parseFloat(req.query.maxRating)  : null;
+
   try {
     let allResults = [];
-    const pages = Math.ceil(requestedCount / 20);
+    const MAX_PAGES = 5; // safety cap to avoid burning SerpAPI credits
 
-    for (let page = 0; page < pages && allResults.length < requestedCount; page++) {
+    for (let page = 0; page < MAX_PAGES; page++) {
       const params = {
         engine: 'google_maps',
         q: `${niche} in ${city}`,
@@ -203,10 +208,17 @@ app.get('/search', requireAuth, async (req, res) => {
       const data = response.data;
 
       if (data.local_results && data.local_results.length > 0) {
-        allResults = allResults.concat(data.local_results);
+        let batch = data.local_results;
+        // Apply filters to each batch as it comes in
+        if (filterNoWebsite)              batch = batch.filter(b => !b.website);
+        if (filterMaxReviews !== null)    batch = batch.filter(b => (b.reviews || 0) <= filterMaxReviews);
+        if (filterMaxRating  !== null)    batch = batch.filter(b => b.rating && b.rating <= filterMaxRating);
+        allResults = allResults.concat(batch);
       } else {
         break;
       }
+
+      if (allResults.length >= requestedCount) break;
     }
 
     // Format results
