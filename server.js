@@ -216,18 +216,34 @@ app.get('/search', requireAuth, async (req, res) => {
       const reviews = biz.reviews || 0;
       const hasPhone = !!biz.phone;
 
-      // Score calculation
-      let score = 50;
-      if (!hasWebsite)                score += 20;
-      if (reviews < 10)               score += 15;
-      if (rating && rating < 4.0)     score += 10;
-      if (!biz.thumbnail)             score += 5;
-      if (reviews === 0)              score += 5;
-      if (rating && rating < 3.0)     score += 5;
-      score = Math.min(score, 99);
+      // Score calculation — higher = more opportunity (weaker online presence)
+      let score = 30;
+
+      // Website — biggest signal
+      if (!hasWebsite)                    score += 35;
+
+      // Reviews
+      if (reviews === 0)                  score += 25;
+      else if (reviews < 5)               score += 20;
+      else if (reviews < 15)              score += 12;
+      else if (reviews < 30)              score += 5;
+      else if (reviews >= 100)            score -= 10; // very established
+
+      // Rating
+      if (!rating)                        score += 5;
+      else if (rating < 3.0)              score += 20;
+      else if (rating < 3.5)              score += 14;
+      else if (rating < 4.0)              score += 8;
+      else if (rating >= 4.5 && reviews >= 50) score -= 8; // popular & well-rated
+
+      // Profile gaps
+      if (!biz.thumbnail)                 score += 7;
+      if (!biz.phone)                     score += 5;
+
+      score = Math.max(10, Math.min(99, score));
 
       // Score label
-      const scoreLabel = score >= 80 ? 'Hot Lead' : score >= 65 ? 'Warm Lead' : 'Cold Lead';
+      const scoreLabel = score >= 75 ? 'Hot Lead' : score >= 50 ? 'Warm Lead' : 'Cold Lead';
 
       // Detailed gaps for AI explanation
       const gaps = [];
