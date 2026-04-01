@@ -31,14 +31,17 @@ const PLAN_LIMITS = {
 };
 
 
-// Scrape a real email from a business website
-async function scrapeEmail(websiteUrl) {
+// Scrape email and founding year from a business website in one pass
+async function scrapeWebsiteData(websiteUrl) {
   const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
-  // Filter out noise: image files, tracking pixels, platform emails, etc.
-  const ignore = /\.(png|jpg|jpeg|gif|svg|webp|css|js)@|noreply|no-reply|@example\.|@sentry\.|@wix|@squarespace|@shopify|@wordpress|@gravatar|privacy@|support@apple|amazonaws/i;
+  const emailIgnore = /\.(png|jpg|jpeg|gif|svg|webp|css|js)@|noreply|no-reply|@example\.|@sentry\.|@wix|@squarespace|@shopify|@wordpress|@gravatar|privacy@|support@apple|amazonaws/i;
+  const currentYear = new Date().getFullYear();
 
   const base = websiteUrl.replace(/\/$/, '');
   const pagesToTry = [base, `${base}/contact`, `${base}/about`, `${base}/contact-us`];
+
+  let email = null;
+  let foundingYear = null;
 
   for (const page of pagesToTry) {
     try {
@@ -46,16 +49,54 @@ async function scrapeEmail(websiteUrl) {
         timeout: 4000,
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
         maxRedirects: 3,
-        maxContentLength: 500000, // cap at 500KB to avoid huge pages
+        maxContentLength: 500000,
       });
       const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-      const found = (html.match(emailRegex) || []).filter(e => !ignore.test(e));
-      if (found.length) return found[0].toLowerCase();
-    } catch (_) {
-      // page unreachable — try next
-    }
+
+      // Email
+      if (!email) {
+        const found = (html.match(emailRegex) || []).filter(e => !emailIgnore.test(e));
+        if (found.length) email = found[0].toLowerCase();
+      }
+
+      // Founding year — JSON-LD schema first
+      if (!foundingYear) {
+        const jsonLdBlocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+        for (const block of jsonLdBlocks) {
+          try {
+            const json = JSON.parse(block.replace(/<script[^>]*>|<\/script>/gi, ''));
+            const schemas = Array.isArray(json) ? json : [json];
+            for (const schema of schemas) {
+              const fd = schema.foundingDate || schema.foundedDate;
+              if (fd) {
+                const yr = parseInt(String(fd).slice(0, 4));
+                if (yr >= 1900 && yr <= currentYear) { foundingYear = yr; break; }
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      // Founding year — text patterns
+      if (!foundingYear) {
+        const patterns = [
+          /(?:est(?:ablished)?\.?|founded|since|serving since|in business since|trading since)[^\d]{0,10}(\d{4})/i,
+          /©\s*(\d{4})\s*[-–]\s*\d{4}/,  // © 2008-2024
+        ];
+        for (const pat of patterns) {
+          const m = html.match(pat);
+          if (m) {
+            const yr = parseInt(m[1]);
+            if (yr >= 1900 && yr <= currentYear) { foundingYear = yr; break; }
+          }
+        }
+      }
+
+      if (email && foundingYear) break; // got everything, stop fetching pages
+    } catch (_) {}
   }
-  return null;
+
+  return { email, foundingYear };
 }
 
 // Get start of current month
@@ -214,13 +255,19 @@ app.get('/search', requireAuth, async (req, res) => {
       };
     });
 
-    // Scrape real emails from websites in parallel
-    const emailResults = await Promise.allSettled(
-      leads.map(l => l.website ? scrapeEmail(l.website) : Promise.resolve(null))
+    // Scrape email + founding year from websites in parallel
+    const scrapeResults = await Promise.allSettled(
+      leads.map(l => l.website ? scrapeWebsiteData(l.website) : Promise.resolve({}))
     );
-    emailResults.forEach((result, i) => {
+    const currentYear = new Date().getFullYear();
+    scrapeResults.forEach((result, i) => {
       if (result.status === 'fulfilled' && result.value) {
-        leads[i].email = result.value;
+        const { email, foundingYear } = result.value;
+        if (email) leads[i].email = email;
+        if (foundingYear) {
+          leads[i].foundingYear = foundingYear;
+          leads[i].yearsInBusiness = currentYear - foundingYear;
+        }
       }
     });
 
