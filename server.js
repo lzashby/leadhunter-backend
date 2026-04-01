@@ -30,10 +30,22 @@ const PLAN_LIMITS = {
   pro:   { searches: Infinity,  maxLeads: 100 },
 };
 
+// Check if a string looks like a real person name (First Last, both capitalised, no stop words)
+function isLikelyName(str) {
+  if (!str) return false;
+  const parts = str.trim().split(/\s+/);
+  if (parts.length < 2 || parts.length > 3) return false;
+  const stopWords = /^(the|our|your|this|that|to|of|and|or|a|an|is|in|at|for|with|all|any|new|old|senior|junior|general|chief|head|lead|main|top|first|last|my|his|her|its|we|us|me|you|he|she|they|team|staff|crew|group|company|business|services|solutions|management|operations|director|manager|officer|president|executive)$/i;
+  if (parts.some(p => stopWords.test(p))) return false;
+  // Each word must start uppercase and contain only letters, min 2 chars
+  if (!parts.every(p => /^[A-Z][a-zA-Z]{1,}$/.test(p))) return false;
+  return true;
+}
+
 // Scrape owner/founder name from a business website
 async function scrapeOwnerName(websiteUrl) {
   const base = websiteUrl.replace(/\/$/, '');
-  const pagesToTry = [base, `${base}/about`, `${base}/about-us`, `${base}/team`, `${base}/our-story`];
+  const pagesToTry = [base, `${base}/about`, `${base}/about-us`, `${base}/our-story`];
 
   for (const page of pagesToTry) {
     try {
@@ -45,30 +57,33 @@ async function scrapeOwnerName(websiteUrl) {
       });
       const html = typeof res.data === 'string' ? res.data : '';
 
-      // 1. Try JSON-LD schema markup (most reliable)
-      const jsonLdMatches = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
-      for (const block of jsonLdMatches) {
+      // 1. JSON-LD schema markup — most reliable when present
+      const jsonLdBlocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+      for (const block of jsonLdBlocks) {
         try {
           const json = JSON.parse(block.replace(/<script[^>]*>|<\/script>/gi, ''));
           const schemas = Array.isArray(json) ? json : [json];
           for (const schema of schemas) {
-            // founder, employee, or contactPoint with a person name
-            const person = schema.founder || schema.employee || schema.owner;
-            if (person && person.name) return person.name;
-            if (schema['@type'] === 'Person' && schema.name) return schema.name;
+            const person = schema.founder || schema.owner;
+            const name = person?.name || (schema['@type'] === 'Person' ? schema.name : null);
+            if (name && isLikelyName(name)) return name;
           }
         } catch (_) {}
       }
 
-      // 2. Text patterns — "Owner: John Smith", "Founded by Jane", etc.
+      // 2. Copyright footer — "© 2024 John Smith" (common on sole trader sites)
+      const copy = html.match(/©\s*\d{4}\s+([A-Z][a-z]+\s[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/);
+      if (copy && isLikelyName(copy[1])) return copy[1].trim();
+
+      // 3. Strict text patterns — keyword immediately followed by a proper name
       const patterns = [
-        /(?:owner|founder|proprietor|director|principal|president|ceo|operator)[:\s,–-]+([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})/i,
-        /(?:hi,?\s+i'?m|my name is|meet)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/i,
-        /founded\s+by\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})/i,
+        /(?:owner|founder|proprietor|proprietress)[:\s,\-–]+([A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,}){1,2})/,
+        /(?:founded|owned|started)\s+by\s+([A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,}){1,2})/,
+        /(?:Hi,?\s+I'?m|I'?m\s+your\s+\w+,?\s+)([A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,})?)/,
       ];
       for (const pattern of patterns) {
         const match = html.match(pattern);
-        if (match && match[1] && match[1].length < 40) return match[1].trim();
+        if (match && isLikelyName(match[1])) return match[1].trim();
       }
     } catch (_) {}
   }
