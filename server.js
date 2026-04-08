@@ -26,9 +26,12 @@ const supabaseAdmin = createClient(
 
 // Plan limits
 const PLAN_LIMITS = {
-  free:  { searches: 5,         maxLeads: 25  },
-  pro:   { searches: Infinity,  maxLeads: 100 },
+  free:  { searches: 5,        maxLeads: 25,  maxPages: 2 },
+  pro:   { searches: Infinity, maxLeads: 100, maxPages: 8 },
 };
+
+// In-memory search cache (resets on server restart)
+const searchCache = new Map();
 
 
 // Scrape email and founding year from a business website in one pass
@@ -190,9 +193,29 @@ app.get('/search', requireAuth, async (req, res) => {
   const filterMaxReviews = req.query.maxReviews ? parseInt(req.query.maxReviews) : null;
   const filterMaxRating  = req.query.maxRating  ? parseFloat(req.query.maxRating)  : null;
 
+  // Check cache (keyed by niche+city+count+filters, 10 min TTL)
+  const cacheKey = JSON.stringify({ niche, city, count: requestedCount, filterNoWebsite, filterMaxReviews, filterMaxRating });
+  const cached = searchCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts) < 10 * 60 * 1000) {
+    // Still increment search count even for cached results
+    await supabaseAdmin
+      .from('profiles')
+      .update({ searches_used: (profile.searches_used || 0) + 1 })
+      .eq('id', req.user.id);
+    return res.json({
+      ...cached.data,
+      usage: {
+        plan,
+        searches_used: (profile.searches_used || 0) + 1,
+        searches_limit: limits.searches === Infinity ? 'unlimited' : limits.searches,
+        leads_limit: limits.maxLeads,
+      },
+    });
+  }
+
   try {
     let allResults = [];
-    const MAX_PAGES = 5; // safety cap to avoid burning SerpAPI credits
+    const MAX_PAGES = limits.maxPages || 5;
 
     for (let page = 0; page < MAX_PAGES; page++) {
       const params = {
@@ -313,11 +336,23 @@ app.get('/search', requireAuth, async (req, res) => {
       .update({ searches_used: (profile.searches_used || 0) + 1 })
       .eq('id', req.user.id);
 
-    res.json({
+    const responseBody = {
       success: true,
       query: { niche, city, count: requestedCount },
       total: leads.length,
       leads,
+    };
+
+    // Cache the result (without usage — that's per-user)
+    searchCache.set(cacheKey, { data: responseBody, ts: Date.now() });
+    // Evict old cache entries if map grows too large
+    if (searchCache.size > 200) {
+      const oldest = [...searchCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+      if (oldest) searchCache.delete(oldest[0]);
+    }
+
+    res.json({
+      ...responseBody,
       usage: {
         plan,
         searches_used: (profile.searches_used || 0) + 1,
