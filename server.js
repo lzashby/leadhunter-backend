@@ -2,8 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
+const Stripe = require('stripe');
 
 const app = express();
+
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 // Force CORS headers on every response including errors
 app.use((req, res, next) => {
@@ -12,6 +15,49 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
+});
+
+// Stripe webhook — must be raw body, registered BEFORE express.json()
+app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('Webhook signature error:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const userId = session.metadata?.supabase_user_id;
+    if (userId) {
+      await supabaseAdmin.from('profiles').update({
+        plan: 'pro',
+        stripe_customer_id:     session.customer,
+        stripe_subscription_id: session.subscription,
+      }).eq('id', userId);
+      console.log(`Upgraded user ${userId} to Pro`);
+    }
+  }
+
+  if (event.type === 'customer.subscription.deleted') {
+    const sub = event.data.object;
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('id')
+      .eq('stripe_customer_id', sub.customer)
+      .single();
+    if (profile) {
+      await supabaseAdmin.from('profiles').update({
+        plan: 'free',
+        stripe_subscription_id: null,
+      }).eq('id', profile.id);
+      console.log(`Downgraded user ${profile.id} to Free`);
+    }
+  }
+
+  res.json({ received: true });
 });
 
 app.use(express.json());
@@ -163,6 +209,50 @@ async function requireAuth(req, res, next) {
   req.profile = profile;
   next();
 }
+
+// Create Stripe checkout session
+app.post('/create-checkout-session', requireAuth, async (req, res) => {
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
+      success_url: 'https://leadhunter-sage.vercel.app/app.html?upgraded=1',
+      cancel_url:  'https://leadhunter-sage.vercel.app/pricing.html',
+      customer_email: req.user.email,
+      metadata: { supabase_user_id: req.user.id },
+      subscription_data: { metadata: { supabase_user_id: req.user.id } },
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('Checkout session error:', err.message);
+    res.status(500).json({ error: 'Could not create checkout session.' });
+  }
+});
+
+// Customer portal (manage billing / cancel)
+app.post('/create-portal-session', requireAuth, async (req, res) => {
+  try {
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('stripe_customer_id')
+      .eq('id', req.user.id)
+      .single();
+
+    if (!profile?.stripe_customer_id) {
+      return res.status(400).json({ error: 'No billing account found.' });
+    }
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer:   profile.stripe_customer_id,
+      return_url: 'https://leadhunter-sage.vercel.app/app.html',
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('Portal session error:', err.message);
+    res.status(500).json({ error: 'Could not open billing portal.' });
+  }
+});
 
 app.get('/search', requireAuth, async (req, res) => {
   const { niche, city, count } = req.query;
