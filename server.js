@@ -6,7 +6,10 @@ const Stripe = require('stripe');
 
 const app = express();
 
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+function getStripe() {
+  if (!process.env.STRIPE_SECRET_KEY) throw new Error('STRIPE_SECRET_KEY not set');
+  return Stripe(process.env.STRIPE_SECRET_KEY);
+}
 
 // Force CORS headers on every response including errors
 app.use((req, res, next) => {
@@ -22,7 +25,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
   const sig = req.headers['stripe-signature'];
   let event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    event = getStripe().webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error('Webhook signature error:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -213,7 +216,7 @@ async function requireAuth(req, res, next) {
 // Create Stripe checkout session
 app.post('/create-checkout-session', requireAuth, async (req, res) => {
   try {
-    const session = await stripe.checkout.sessions.create({
+    const session = await getStripe().checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
@@ -243,7 +246,7 @@ app.post('/create-portal-session', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'No billing account found.' });
     }
 
-    const session = await stripe.billingPortal.sessions.create({
+    const session = await getStripe().billingPortal.sessions.create({
       customer:   profile.stripe_customer_id,
       return_url: 'https://leadhunter-sage.vercel.app/app.html',
     });
